@@ -1,0 +1,260 @@
+\documentclass{article}
+
+\usepackage{url}
+\usepackage{graphicx,subfig}
+\usepackage{float}
+\usepackage{fullpage}
+\usepackage{amsmath}
+
+
+\title{Beyond Linearity / Something New / Summary}
+\author{Nolan McCafferty}
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+\maketitle
+
+<<global_options, include=FALSE, echo=FALSE>>=
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, fig.height=3, fig.width=5, fig.align = "center")
+library(dplyr)
+library(ggplot2)
+library(infer)
+library(skimr)
+library(broom)
+library(readr)
+library(glmnet)
+library(splines)
+options(digits=3)
+@
+
+
+<<echo=FALSE, include=FALSE>>=
+hawks <- read.csv("hawks.csv")
+hawks.test <- read.csv("hawks.test.csv")
+hawks <- hawks %>% filter(PlayType %in% c("Pass", "Run"))
+hawks.test <- hawks.test %>% filter(PlayType %in% c("Pass", "Run"))
+hawks.test <- sample_n(hawks.test, 100)
+hawks <- hawks[, -c(80:100)]
+hawks.test <- hawks.test[, -c(80:100)]
+hawks$down <- as.factor(hawks$down)
+hawks$Drive <- as.factor(hawks$Drive)
+hawks$qtr <- as.factor(hawks$qtr)
+hawks$FirstDown <- as.factor(hawks$FirstDown)
+hawks$Touchdown <- as.factor(hawks$Touchdown)
+hawks$Fumble <- as.factor(hawks$Fumble)
+hawks.test$down <- as.factor(hawks.test$down)
+hawks.test$Drive <- as.factor(hawks.test$Drive)
+hawks.test$qtr <- as.factor(hawks.test$qtr)
+hawks.test$FirstDown <- as.factor(hawks.test$FirstDown)
+hawks.test$Touchdown <- as.factor(hawks.test$Touchdown)
+hawks.test$Fumble <- as.factor(hawks.test$Fumble)
+hawks <- hawks[, names(hawks) %in% c("ydstogo", "yrdline100", "down", "PlayType", "Yards.Gained", "Season", "Drive", "qtr", "TimeSecs", "FirstDown", "YardsAfterCatch", "AirYards", "ydsnet", "Touchdown", "Fumble")]
+hawks.test <- hawks.test[, names(hawks.test) %in% c("ydstogo", "yrdline100", "down", "PlayType", "Yards.Gained", "Season", "Drive", "qtr", "TimeSecs", "FirstDown", "YardsAfterCatch", "AirYards", "ydsnet", "Touchdown", "Fumble")]
+hawks <- na.omit(hawks)
+hawks.test <- na.omit(hawks.test)
+@
+
+
+\section*{Sparse and Smooth Linear Models}
+
+\subsection*{Introduction}
+
+The dataset I am using for this project is a set of NFL play-by-play data from 2009-2017. I have narrowed down the data to the subset of data I want to work with, play-by-play data for the Seattle Seahawks from 2013-2015, in order to conduct inference on the Seahawks from 2009-2017. The observational unit is one play in a football game and there are over 75 columns for each play with several numerical and categorical variables including season, down, yards-to-go, play-type, and many more (that being said there are many columns that would be inappropriate in building a model). The response variable in my analysis is the yards-gained on the play. I have added several more explanatory variables into the anlysis including Firstdown, Time in seconds, quarter, drive, Touchdown, Yards-after-catch, and more. 
+
+\subsection*{Ridge Regression and LASSO}
+
+Using CV we see that the optimal lambda for our RR model is :
+
+<<echo=FALSE, include=TRUE>>=
+lambda.grid <- 10^seq(5,-5, length = 100)
+hawks.pred <- hawks[, !names(hawks) %in% c("Yards.Gained")]
+hawks.test.pred <- hawks.test[, !names(hawks.test) %in% c("Yards.Gained")]
+hawks.x <- data.matrix(hawks.pred)
+hawks.test.x <- data.matrix(hawks.test.pred)
+hawks.y <- hawks$Yards.Gained
+hawks.rr.cv <- cv.glmnet(hawks.x, hawks.y, alpha=0, lambda = lambda.grid)
+@
+
+<<echo=TRUE, include=TRUE>>=
+hawks.rr.cv$lambda.min
+@
+
+<<echo=FALSE, include=TRUE, fig=TRUE, height=4>>=
+plot(hawks.rr.cv) 
+abline(v=log(hawks.rr.cv$lambda.min), col="green")
+@
+
+\newpage
+
+We see that the optimal lambda for our LASSO model is :
+
+<<echo=FALSE, include=TRUE>>=
+hawks.lasso.cv <- cv.glmnet(hawks.x, hawks.y, alpha=1, lambda = lambda.grid)
+@
+
+<<echo=TRUE, include=TRUE>>=
+hawks.lasso.cv$lambda.min
+@
+
+<<echo=FALSE, include=TRUE, fig=TRUE, height=4>>=
+plot(hawks.lasso.cv) 
+abline(v=log(hawks.lasso.cv$lambda.min), col="green")
+@
+
+The plots below show that the Ridge Regression and LASSO coefficients are almost identical. The two large coefficients correspond to the variables Firstdown and Timesecs. Firstdown is a binary variable that shows if the play resulted in a first down or not. It makes sense that this variable would have an impact because if the play results in a firstdown then there must be yards-gained by definition. Timesecs is the amount of seconds remaining in the game, so earlier in the game this value will be large and it decreases as the game goes on. The large coefficient implies that more yards are gained earlier in the game rather than at the end, which makes sense (because teams could be running out the clock or taking a knee at the end). 
+
+<<echo=FALSE, include=TRUE, fig=TRUE, width=8, height=4>>=
+par(mfrow=c(1,2))
+mlr <- lm(Yards.Gained~ydstogo+yrdline100+down+PlayType+Season+Drive+qtr+TimeSecs+FirstDown+YardsAfterCatch+AirYards+ydsnet+Touchdown+Fumble, data=hawks)
+mlr.cfs <- as.numeric(mlr$coefficients[-1])
+rr.cfs <- as.numeric(coef(hawks.rr.cv, s="lambda.min"))[-1]
+lasso.cfs <- as.numeric(coef(hawks.lasso.cv, s="lambda.min"))[-1]
+plot(c(1:14), rr.cfs, xlab="coefficients", ylab="RR coefficients", cex =1, pch=19)
+plot(c(1:14), lasso.cfs, xlab="coefficients", ylab="LASSO coefficients", cex =1, pch=19)
+@
+
+\newpage
+
+The coefficients for the MLR model (with the added variables) are shown in the plot below. We see that Firstdown again has a high coefficient and Touchdown also has a high coefficient. 
+
+<<echo=FALSE, include=TRUE, fig=TRUE, width=8, height=4>>=
+plot(c(1:45), mlr.cfs, xlab="coefficients", ylab="MLR coefficients", cex =1, pch=19)
+@
+
+
+The plot of the predictions of each model is below. For the predictions I used the data from the 2017 Seahawks Season. As you can see, the RR and LASSO models are almost identical in their predictions. Also, the MLR model consitently predicts slightly below the RR and LASSO models. The predictions generally follow the $y=x$ line (which they should if they predict correctly). 
+
+<<echo=FALSE, include=TRUE, fig=TRUE, height=5>>=
+mlr.pred <- predict(mlr, newdata = hawks.test.pred)
+rr.pred <- predict(hawks.rr.cv, newx = hawks.test.x,
+s = "lambda.min")
+lasso.pred <- predict(hawks.lasso.cv, newx = hawks.test.x,
+s = "lambda.min")
+
+
+plot(hawks.test$Yards.Gained, mlr.pred, pch=0, col="green", cex=0.75, xlab="Observed Yards-Gained", ylab="Predicted Yards-Gained", main="Predictions")
+points(hawks.test$Yards.Gained, rr.pred, pch=1, col="blue", cex=0.75)
+points(hawks.test$Yards.Gained, lasso.pred, pch=2, col="red", cex=0.75)
+legend("bottomright", legend = c("MLR", "RR", "LASSO"), col=c("green", "blue", "red"), pch=c(0,1,2))
+@
+
+
+
+
+
+\subsection*{Regression Splines and Local Regression}
+
+<<echo=FALSE, include=TRUE, fig=TRUE, width=8, height=6>>=
+par(mfrow=c(1,2))
+sample <- sample_n(hawks, 200)
+lims <- range(sample$ydstogo)
+hawks.grid <- seq(from=lims[1], to=lims[2])
+
+plot(sample$ydstogo, sample$Yards.Gained, cex =.5, pch=19, col =" darkgrey ", xlab="Yards-To-Go", ylab="Yards Gained")
+title("Regression Splines")
+
+colors <- c("blue", "green", "red", "yellow")
+for (i in 3:7) {
+  hawks.rs <- lm(Yards.Gained ~ bs(ydstogo, df=i, degree = 3), data=sample)
+  hawks.rs.pred <- predict(hawks.rs, newdata=list(ydstogo=hawks.grid))
+  lines(hawks.grid, hawks.rs.pred, lwd=2, col=colors[i-3])
+}
+legend("topright", legend = c(0:3), col=colors, title="Knots", pch=19)
+
+plot(sample$ydstogo, sample$Yards.Gained, cex =.5, pch=19, col =" darkgrey ", xlab="Yards-To-Go", ylab="Yards Gained")
+title("Local Regression")
+spanvals <- c(.5, .75, 1, 2)
+for (i in 1:4) {
+  hawks.lr <- loess(Yards.Gained ~ ydstogo, span=spanvals[i], data=sample)
+  hawks.lr.pred <- predict(hawks.lr, data.frame(ydstogo=hawks.grid)) 
+  lines(hawks.grid, hawks.lr.pred, lwd=2, col=colors[i])
+}
+legend("topright", legend = spanvals, col=colors, title="Span", pch=19)
+@
+
+The plot above on the left shows four regression spline models, all degree 3, each with a different number of knots. As you can see, the models all give similar fits for the data, however it is clear that the models with more knots are overfitting the data. Consistant across all the models is the slow increase in slope until just after 10 yards followed by a steady decrease. On the right above are four local regression models with different spans. Similarly, the models with very small spans are overfitting and the general shape is consistent. 
+
+\section*{Something New}
+
+\subsection*{Local Regression in Higher Dimensions}
+
+For the additional analysis using a concept we have not discussed in class, I will explore Local Regression (kernels) in higher dimensions. I picked this method because it is clear from the initial kernel smoother models that the Yards-To-Go variable in particular does not have a linear relationship with the response (Yards-Gained). Therefore, using kernel smoothing methods could produce a better model than just linear models. Extending Local Regression to higher dimensions is an interesting concept because defining the "neighborhood" of an observation becomes more difficult as well as visualizing the predictions. 
+
+When extening Local Regression to multiple dimensions, it is important to think about what happens to the "neighborhood" of a specific observation. Since there are now two or more dimensions to consider, the number of points in the local neighborhood of an particular point will decline. This presents a problem because we need there to be a fixed number of points in each local regression. The solution comes via altering a parameter, span. This will cause the span to be larger, which means the regression will become less local causing the bias of the estimate to increase. 
+
+The mechanics of Multidimensional Local Regression are very similar to the loess model in one dimension. Weighted Least Squares is used to fit each local regression model and the span is chosen to smooth the data. The difference with multiple explanatory variables is that we must take the product of all the marginal weights to find the neighborhood of each observation:
+
+$$w_{i} = W(\frac{D(x_{i}, x_{0})}{h})$$
+
+where $W$ is the weight function and $D(x_{i}, x_{0})$ is the distance (Euclidean in R) between the particular $x_{0}$ and each $x_{i}$ and $h$ is the window half-width. 
+
+\vspace{5mm}
+
+For our Seahawks data, we will use yards-to-go and yard-line as the explanatory variables in our multidimensional local regression. The plots below show the predictions for several different span values:
+
+\vspace{1cm}
+
+<<echo=FALSE, include=TRUE, fig=TRUE, out.width='5in'>>=
+par(mfrow=c(2,2))
+spanvals = c(.25, .5, .8, 1.5)
+for (i in 1:4) {
+  multi.lr <- loess(Yards.Gained~ydstogo+yrdline100, span=spanvals[i], data=sample)
+  lims2 <- range(sample$yrdline100)
+  hawks.grid2 <- seq(from=lims2[1], to=lims2[2], len=length(hawks.grid))
+  data <- expand.grid(ydstogo=hawks.grid, yrdline100=hawks.grid2)
+  fit.mod <- matrix(predict(multi.lr, data), length(hawks.grid), length(hawks.grid))
+  persp(hawks.grid, hawks.grid2, fit.mod, theta=30, xlab='Yards-to-go', ylab='Yard-line', shade=.75, col="yellow", zlab='Fitted Yards Gained', main = paste("Span = ", spanvals[i], sep=""))
+}
+@
+
+\newpage
+
+We can see from the plots above that the regression surface is clearly nonlinear. The plot with span = 0.8 seems to not overfit the data while still providing an interesting surface. Next, we conduct an incremental F-test for the terms in the model:
+
+<<echo=FALSE, include=TRUE>>=
+m1 <- loess(Yards.Gained~ydstogo+yrdline100, span = 0.8, data=hawks)
+m2 <- loess(Yards.Gained~ydstogo, span = 0.8, data=hawks)
+anova(m1,m2)
+@
+
+Using the ANOVA function above, we see that there is a significant difference when yard-line is added to the model (p-value < 1e-07)! Here is our final model (3D is cool):
+
+<<echo=FALSE, include=TRUE, fig=TRUE>>=
+ multi.lr <- loess(Yards.Gained~ydstogo+yrdline100, span=0.8, data=sample)
+  lims2 <- range(sample$yrdline100)
+  hawks.grid2 <- seq(from=lims2[1], to=lims2[2], len=length(hawks.grid))
+  data <- expand.grid(ydstogo=hawks.grid, yrdline100=hawks.grid2)
+  fit.mod <- matrix(predict(multi.lr, data), length(hawks.grid), length(hawks.grid))
+  persp(hawks.grid, hawks.grid2, fit.mod, theta=30, xlab='Yards-to-go', ylab='Yard-line', shade=.75, col="yellow", zlab='Fitted Yards Gained', main = "loess(Yards.Gained ~ Yards-to-go + Yard-line, span = 0.8)")
+@
+
+\newpage
+
+\section*{Summary}
+
+By adding more explanatory variables to the model (especially Firstdown and Touchdown), I was able to improve my model drastically from the last project. The final model is given below:
+
+
+<<echo=False, include=TRUE>>=
+final.model <- lm(Yards.Gained~ydstogo*PlayType+yrdline100+down+FirstDown+YardsAfterCatch+AirYards+ydsnet+Touchdown+Fumble, data=hawks)
+  
+summary(final.model)
+@
+  
+This new model has an Adjusted R-squared of 0.641, compared to the Adjusted R-squared of 0.047 for the previous model gives a increase of 0.594! Suddenly, the model actually seems significant and accurate for the data. Analyzing the coefficients of the model reveals several interesting findings. First, the explanatory variables "down4" and "Fumble1" have negative coefficients, indicating that if it is fourth down, or there is a fumble on the play, the prediction of yards-gained decreases. Another interesting observation is that "down2" and "down3" do not seem to be significant (high p-values) but "down4" has a very small p-value. This tells us that there is little difference between if it is second or third down, but if it fourth down there is a signifiant decrease in expected yards-gained. The variables "Firstdown1" and "Touchdown1" have the largest coefficients, which makes sense because to get a firstdown or touchdown you have to gain yards. I also interacted yards-to-go with play-type for the final predictor. 
+
+
+\newpage
+
+The residual plot is given below:
+
+<<echo=FALSE, include=TRUE, fig=TRUE, height=5>>=
+ggplot() + geom_point(aes(final.model$fitted.values, rstudent(final.model))) + xlab("Fitted Values") + ylab("Studentized Residuals")
+@
+
+The addition of these variables completely changed the entire outlook of my project. I was fully prepared to present a narrative of repeated failed anlalysis and a model with little to no value. However, this final model gives actual insight into the data and holds predictive power. I can't give you a realistic situation where you would ever need to predict the yards gained on a specific football play given these explanatory variables, but if that problem ever arises this model could be very useful. The process of repeated modeling using several different techniques opened my eyes to these new variables that turned out to be influential. 
+
+An interesting extension to this project could be building a model like this for different teams throughout the NFL and seeing if the model changes significantly from team to team. An interesting note is that throughout the models I was unable to find any significance from the Season variable. This could be because the Seahawks offense did not differ much between the 2013-2015 seasons and Season could possibly have more of an impact in a situation where a team's offense changes dramatically from year to year (maybe they signed or lost a star offensive player). 
+
+
+\end{document}
